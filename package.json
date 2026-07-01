@@ -19,11 +19,11 @@
     "url": "https://github.com/mordonez/cf-ai-social-publisher/issues"
   },
   "homepage": "https://github.com/mordonez/cf-ai-social-publisher#readme",
-  "private": true,
   "main": "src/index.ts",
   "types": "src/index.ts",
   "files": [
-    "src"
+    "src",
+    "!src/*.test.ts"
   ],
   "scripts": {
     "test": "vitest run"
