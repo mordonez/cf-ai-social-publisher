@@ -1,72 +1,7 @@
-import decode, { init as initJpegDecode } from '@jsquash/jpeg/decode';
-import encode, { init as initJpegEncode } from '@jsquash/jpeg/encode';
-import decodePng, { init as initPngDecode } from '@jsquash/png/decode';
-// Wrangler bundles .wasm as WebAssembly.Module; explicit init() bypasses the fetch path that fails in miniflare.
-import jpegDecWasm from '@jsquash/jpeg/codec/dec/mozjpeg_dec.wasm';
-import jpegEncWasm from '@jsquash/jpeg/codec/enc/mozjpeg_enc.wasm';
-// @ts-ignore — squoosh_png_bg.wasm.d.ts declares wasm-instance exports, not the module object
-import pngDecWasm from '@jsquash/png/codec/pkg/squoosh_png_bg.wasm';
 import { Buffer } from 'node:buffer';
 
-let wasmReady: Promise<void> | null = null;
-
-function ensureWasmReady(): Promise<void> {
-  wasmReady ??= Promise.all([
-    initJpegDecode(jpegDecWasm as unknown as WebAssembly.Module),
-    initJpegEncode(jpegEncWasm as unknown as WebAssembly.Module),
-    initPngDecode(pngDecWasm),
-  ]).then(() => undefined);
-  return wasmReady;
-}
-
-let wmCache: ImageData | null = null;
-let wmB64Cached: string | null = null;
-
-async function getWatermark(watermarkB64: string): Promise<ImageData> {
-  if (wmCache && wmB64Cached === watermarkB64) return wmCache;
-  const bytes = Buffer.from(watermarkB64, 'base64');
-  const buf = bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength,
-  );
-  wmCache = await decodePng(buf as ArrayBuffer);
-  wmB64Cached = watermarkB64;
-  return wmCache;
-}
-
-function compositeWatermark(image: ImageData, wm: ImageData): void {
-  const { width: iw, height: ih } = image;
-  const { width: wmW, height: wmH, data: wmData } = wm;
-
-  const targetW = Math.min(wmW, Math.round(iw * 0.28));
-  const scale = targetW / wmW;
-  const targetH = Math.round(wmH * scale);
-  const margin = Math.round(iw * 0.025);
-  const x0 = iw - targetW - margin;
-  const y0 = ih - targetH - margin;
-  const imgData = image.data;
-
-  for (let dy = 0; dy < targetH; dy++) {
-    const iy = y0 + dy;
-    if (iy < 0 || iy >= ih) continue;
-    const wy = Math.min(wmH - 1, Math.round(dy / scale));
-    for (let dx = 0; dx < targetW; dx++) {
-      const ix = x0 + dx;
-      if (ix < 0 || ix >= iw) continue;
-      const wx = Math.min(wmW - 1, Math.round(dx / scale));
-      const wmi = (wy * wmW + wx) * 4;
-      const a = wmData[wmi + 3] / 255;
-      if (a === 0) continue;
-      const imi = (iy * iw + ix) * 4;
-      imgData[imi] = Math.round(imgData[imi] * (1 - a) + wmData[wmi] * a);
-      imgData[imi + 1] = Math.round(
-        imgData[imi + 1] * (1 - a) + wmData[wmi + 1] * a,
-      );
-      imgData[imi + 2] = Math.round(
-        imgData[imi + 2] * (1 - a) + wmData[wmi + 2] * a,
-      );
-    }
-  }
+function toStream(buffer: ArrayBuffer): ReadableStream<Uint8Array> {
+  return new Response(buffer).body!;
 }
 
 function looksLikeJpeg(bytes: Uint8Array, start: number, end: number): boolean {
@@ -132,90 +67,59 @@ export function extractJpegFromMp4(buffer: ArrayBuffer): ArrayBuffer | null {
   return null;
 }
 
-// Nearest-neighbor downscale to maxW if larger. Reduces encode CPU on large photos.
-function resizeDown(src: ImageData, maxW: number): ImageData {
-  if (src.width <= maxW) return src;
-  const scale = maxW / src.width;
-  const dstH = Math.round(src.height * scale);
-  const dst = new Uint8ClampedArray(maxW * dstH * 4);
-  const sw = src.width,
-    sd = src.data;
-  for (let dy = 0; dy < dstH; dy++) {
-    const sy = Math.min(src.height - 1, Math.round(dy / scale));
-    for (let dx = 0; dx < maxW; dx++) {
-      const sx = Math.min(sw - 1, Math.round(dx / scale));
-      const si = (sy * sw + sx) * 4;
-      const di = (dy * maxW + dx) * 4;
-      dst[di] = sd[si];
-      dst[di + 1] = sd[si + 1];
-      dst[di + 2] = sd[si + 2];
-      dst[di + 3] = sd[si + 3];
-    }
-  }
-  return {
-    data: dst,
-    width: maxW,
-    height: dstH,
-    colorSpace: src.colorSpace,
-  } as unknown as ImageData;
-}
+const MAX_WIDTH = 1080;
+const WATERMARK_WIDTH_RATIO = 0.28;
+const WATERMARK_MARGIN_RATIO = 0.025;
 
-function buildLut(fn: (x: number) => number): Uint8Array {
-  const lut = new Uint8Array(256);
-  for (let i = 0; i < 256; i++)
-    lut[i] = Math.max(0, Math.min(255, Math.round(fn(i))));
-  return lut;
-}
-
-// S-curve through (0,0)→(128,128)→(255,255); max deviation ≈ amplitude/12 at x=64 and x=192.
-function sc(x: number, amplitude: number): number {
-  const t = x / 255;
-  return x + amplitude * t * (1 - t) * (2 * t - 1);
-}
-
-// Signature HDR: S-curve clarity + warm shadow lift + ×1.3 saturation.
-const HDR_R = buildLut((x) => sc(x, 150) + Math.round(8 * (1 - x / 255)));
-const HDR_G = buildLut((x) => sc(x, 150) + Math.round(2 * (1 - x / 255)));
-const HDR_B = buildLut((x) => sc(x, 150) - Math.round(5 * (1 - x / 255)));
-const HDR_SAT = 333; // 333/256 ≈ ×1.3
-
-function applyHdr(data: Uint8ClampedArray): void {
-  for (let i = 0; i < data.length; i += 4) {
-    let r = HDR_R[data[i]];
-    let g = HDR_G[data[i + 1]];
-    let b = HDR_B[data[i + 2]];
-    // Rec. 601 luma coefficients scaled to sum=256 for integer arithmetic.
-    const lum = (77 * r + 150 * g + 29 * b) >> 8;
-    data[i] = lum + ((HDR_SAT * (r - lum)) >> 8);
-    data[i + 1] = lum + ((HDR_SAT * (g - lum)) >> 8);
-    data[i + 2] = lum + ((HDR_SAT * (b - lum)) >> 8);
-  }
-}
-
+/**
+ * Resize, optionally apply an HDR-ish contrast/saturation boost, and
+ * optionally composite a watermark — all via Cloudflare's Images binding, so
+ * none of this counts against the Worker's own CPU time budget (unlike a
+ * decode via an in-Worker WASM codec, which routinely exceeds the Free
+ * plan's 10ms CPU limit for a real phone photo).
+ *
+ * Watermark/HDR sizing is computed off the fixed MAX_WIDTH target rather
+ * than the actual post-resize dimensions (which would need an extra,
+ * separately billed `.info()` call) — this only under-sizes the watermark
+ * for sources already narrower than MAX_WIDTH, which real phone photos
+ * never are.
+ */
 export async function processImage(
+  images: ImagesBinding,
   buffer: ArrayBuffer,
-  mimeType: string,
   options?: { hdr?: boolean; watermarkB64?: string },
 ): Promise<ArrayBuffer> {
-  await ensureWasmReady();
-  const imageData: ImageData =
-    mimeType === 'image/png' ? await decodePng(buffer) : await decode(buffer);
+  let transformer = images
+    .input(toStream(buffer))
+    .transform({ width: MAX_WIDTH, fit: 'scale-down' });
 
-  const sized = resizeDown(imageData, 1080);
-
-  if (options?.hdr) applyHdr(sized.data);
-
-  if (options?.watermarkB64) {
-    try {
-      const wm = await getWatermark(options.watermarkB64);
-      compositeWatermark(sized, wm);
-    } catch (e) {
-      console.error(
-        'watermark_failed',
-        e instanceof Error ? e.message : String(e),
-      );
-    }
+  if (options?.hdr) {
+    // Approximates the old S-curve + ×1.3 saturation filter using
+    // Cloudflare's built-in adjustments; the old per-channel warm-shadow
+    // tint isn't replicable with these global knobs and is dropped.
+    transformer = transformer.transform({ contrast: 1.15, saturation: 1.3 });
   }
 
-  return encode(sized, { quality: 88 });
+  if (options?.watermarkB64) {
+    // Buffer.from() can return a view into a larger pooled ArrayBuffer, so
+    // slice to the exact byte range before handing it to the binding.
+    const wmBytes = Buffer.from(options.watermarkB64, 'base64');
+    const wmBuffer = wmBytes.buffer.slice(
+      wmBytes.byteOffset,
+      wmBytes.byteOffset + wmBytes.byteLength,
+    ) as ArrayBuffer;
+
+    const wmWidth = Math.round(MAX_WIDTH * WATERMARK_WIDTH_RATIO);
+    const margin = Math.round(MAX_WIDTH * WATERMARK_MARGIN_RATIO);
+    transformer = transformer.draw(
+      images.input(toStream(wmBuffer)).transform({ width: wmWidth }),
+      { bottom: margin, right: margin },
+    );
+  }
+
+  const result = await transformer.output({
+    format: 'image/jpeg',
+    quality: 88,
+  });
+  return result.response().arrayBuffer();
 }

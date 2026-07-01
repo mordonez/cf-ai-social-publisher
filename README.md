@@ -9,7 +9,7 @@ A Cloudflare Workers toolkit for publishing to social media with AI-generated ca
 
 - **Publishing**: Instagram Graph API — photos, carousels (up to 10 images), videos/Reels, token refresh.
 - **Captions**: vision model describes the scene, an LLM writes it in your persona's voice.
-- **Image processing**: resize, optional HDR, watermark.
+- **Image processing**: resize, optional HDR-ish contrast/saturation boost, watermark — via Cloudflare's Images binding, so it runs off the Worker's own CPU budget (safe on the Free plan regardless of photo size).
 - **Video**: frame extraction (Browser Rendering) + audio transcription (Whisper), both fed into the caption prompt.
 - **`createInstagramWorker(config)`**: a full Worker — health check, auth, `/caption`, `/preview`, `/post`, post-processing queue — in ~10 lines.
 
@@ -53,7 +53,7 @@ flowchart TD
 
 ## Quick start
 
-Requirements: a Cloudflare account (Workers AI, R2, Queues, Browser Rendering — all free tier) and an API token with `Workers R2 Storage:Edit` + `Workers Queues:Edit` ([create one](https://dash.cloudflare.com/profile/api-tokens)).
+Requirements: a Cloudflare account (Workers AI, R2, Queues, Images, Browser Rendering — all free tier) and an API token with `Workers R2 Storage:Edit` + `Workers Queues:Edit` ([create one](https://dash.cloudflare.com/profile/api-tokens)).
 
 ```bash
 export WORKER_NAME="my-instagram-worker"
@@ -93,6 +93,7 @@ cat > wrangler.jsonc <<EOF
 		"producers": [{ "binding": "POST_QUEUE", "queue": "${QUEUE}" }],
 		"consumers": [{ "queue": "${QUEUE}", "max_batch_size": 1, "max_retries": 20, "retry_delay": 30 }]
 	},
+	"images": { "binding": "IMAGE_TRANSFORM" },
 	"ai": { "binding": "AI" },
 	"browser": { "binding": "BROWSER" },
 	"observability": { "enabled": true, "logs": { "invocation_logs": true, "head_sampling_rate": 1 } }
@@ -174,6 +175,8 @@ curl -s -X POST http://localhost:8787/post \
 
 `wrangler dev` simulates Queues locally too, so the whole real-post pipeline (captioning, image processing, Instagram container creation/polling, publishing) runs the same locally as in production — watch `wrangler dev`'s console for the consumer's logs. The one thing that still needs production-like setup is Instagram actually being able to fetch the media: it requires a **publicly reachable** R2 URL (`wrangler r2 bucket dev-url enable <bucket>`) and real Instagram credentials. `dry_run=1` remains the fully-offline option — it never uploads processed media or touches the queue.
 
+Plain `wrangler dev` only emulates a subset of the Images binding (`width`/`height`/`rotate`/`format` — no watermark, no HDR). To see the real watermark/contrast output locally, run `wrangler dev --remote` instead, which calls Cloudflare's actual Images service (still free, within the 5,000 transformations/month tier).
+
 ## Escape hatch: building blocks
 
 `createInstagramWorker` covers the common case. For different routes or auth, build your own Hono app from the exported pieces: `generateCaption`, `generateCaptionFromImages`, `publishToInstagram`, `createVideoContainer`, `checkContainerStatus`, `publishFromContainer`, `processImage`, `extractJpegFromMp4`, `extractVideoFrames`, `transcribeVideoAudio`.
@@ -203,6 +206,7 @@ curl -s -X POST http://localhost:8787/post \
 - **Instagram can't fetch the media** — enable R2 Public Access: `wrangler r2 bucket dev-url enable <bucket>`.
 - **Nothing publishes for real locally** — expected unless the R2 bucket has public dev access enabled and real Instagram credentials are set; `dry_run=1` is the offline option.
 - **HTTP Shortcuts "Multiple Files" parameter gives `` `image` (file) is required `` even with one file** — that parameter type always sends the field as `image[]`, not `image`. `/post` accepts both, so this should just work; if it doesn't, double check the parameter name is exactly `image`.
+- **`Exceeded CPU Limit` in the queue consumer** — this shouldn't happen: image processing runs via the Images binding, off the Worker's own CPU budget, regardless of photo size or plan. If you see this, check that the `images` binding is actually present in `wrangler.jsonc` (missing it doesn't fail loudly at deploy time).
 
 ## License
 

@@ -2,16 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createInstagramWorker, type PostJob } from './worker';
 import type { PersonaConfig } from './caption';
 
-// image.ts's real processImage needs real .wasm modules, stubbed to `null`
-// in this test env (see vitest.config.ts) — mock it out so the consumer's
-// R2/publish/retry logic can be tested without touching the codec.
-vi.mock('./image', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./image')>();
-  return {
-    ...actual,
-    processImage: vi.fn(async (buffer: ArrayBuffer) => buffer),
+function createFakeImagesBinding() {
+  const chain = {
+    transform: () => chain,
+    draw: () => chain,
+    output: async () => ({
+      response: () => new Response(new Uint8Array([1, 2, 3]).buffer),
+    }),
   };
-});
+  return { input: () => chain } as unknown as ImagesBinding;
+}
 
 const dummyPersona: PersonaConfig = {
   describeImagePrompt: 'describe',
@@ -60,6 +60,7 @@ function baseEnv() {
     API_KEY: 'secret',
     IMAGES: createFakeR2(),
     AI: fakeAi,
+    IMAGE_TRANSFORM: createFakeImagesBinding(),
     POST_QUEUE: { send: vi.fn(async () => {}) },
   } as any;
 }

@@ -33,6 +33,8 @@ export type InstagramWorkerEnv = {
   API_KEY: string;
   IMAGES: R2Bucket;
   AI: Ai;
+  /** Resize/watermark/color transforms run here, off the Worker's own CPU budget. */
+  IMAGE_TRANSFORM: ImagesBinding;
   /** Every post type (image/carousel/video) is queued here. */
   POST_QUEUE: Queue<PostJob>;
   BROWSER?: Fetcher;
@@ -314,7 +316,7 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
 
     let processedBuffer: ArrayBuffer;
     try {
-      processedBuffer = await processImage(imageBuffer, mimeType, {
+      processedBuffer = await processImage(c.env.IMAGE_TRANSFORM, imageBuffer, {
         hdr: c.env.HDR_ENABLED === '1',
         watermarkB64,
       });
@@ -507,10 +509,14 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
         let outputMimeType = 'image/jpeg';
         let outputExt = 'jpg';
         try {
-          processedBuffer = await processImage(buffers[i], mimeType, {
-            hdr,
-            watermarkB64,
-          });
+          processedBuffer = await processImage(
+            env.IMAGE_TRANSFORM,
+            buffers[i],
+            {
+              hdr,
+              watermarkB64,
+            },
+          );
         } catch (e) {
           console.error(
             'img_process_failed',
