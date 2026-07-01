@@ -179,7 +179,11 @@ Plain `wrangler dev` only emulates a subset of the Images binding (`width`/`heig
 
 ## Escape hatch: building blocks
 
-`createInstagramWorker` covers the common case. For different routes or auth, build your own Hono app from the exported pieces: `generateCaption`, `generateCaptionFromImages`, `publishToInstagram`, `createVideoContainer`, `checkContainerStatus`, `publishFromContainer`, `processImage`, `extractJpegFromMp4`, `extractVideoFrames`, `transcribeVideoAudio`.
+`createInstagramWorker` covers the common case. For different routes or auth, build your own Hono app from the exported pieces:
+
+- **Captioning**: `generateCaption` (single image), `generateCaptionFromImages` (carousel or video frames, optionally with an audio transcript folded in).
+- **Publishing**: `publishToInstagram` (image or carousel — pass an array for the latter), `createVideoContainer` + `checkContainerStatus` + `publishFromContainer` (video, two-phase since Instagram's own processing takes minutes).
+- **Media prep**: `processImage` (resize + watermark via the Images binding), `extractJpegFromMp4` (pulls an iPhone-embedded thumbnail without touching Browser Rendering), `extractVideoFrames` / `extractVideoFrame` (Browser Rendering screenshots), `transcribeVideoAudio` (Whisper).
 
 ## `PersonaConfig`
 
@@ -198,7 +202,17 @@ Plain `wrangler dev` only emulates a subset of the Images binding (`width`/`heig
 - **Design decisions**: [docs/adr](./docs/adr) — why carousels cap at 10, why everything goes through one queue, why image processing runs via the Images binding instead of an in-Worker codec.
 - **Logs**: `wrangler tail`, or dashboard → Workers & Pages → your worker → Logs → Live.
 - **Models & pricing**: [Workers AI catalog](https://developers.cloudflare.com/workers-ai/models/).
-- **Free tier**: [Workers](https://developers.cloudflare.com/workers/platform/limits/) 100k req/day · [R2](https://developers.cloudflare.com/r2/platform/limits/) 10 GB + 1M writes/month · [Workers AI](https://developers.cloudflare.com/workers-ai/platform/pricing/) 10k neurons/day · [Queues](https://developers.cloudflare.com/changelog/post/2026-02-04-queues-free-plan/) 10k ops/day · [Browser Rendering](https://developers.cloudflare.com/browser-rendering/) 10 min/day. One post easily fits within all of these.
+
+**Free tier**: one post easily fits within all of these — no paid plan required for anything this project uses.
+
+| Service           | Free limit                  | Docs                                                                                                                                                                                                  |
+| ----------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workers           | 100k req/day                | [limits](https://developers.cloudflare.com/workers/platform/limits/)                                                                                                                                  |
+| R2                | 10 GB + 1M writes/month     | [limits](https://developers.cloudflare.com/r2/platform/limits/)                                                                                                                                       |
+| Workers AI        | 10k neurons/day             | [pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)                                                                                                                             |
+| Queues            | 10k ops/day                 | [changelog](https://developers.cloudflare.com/changelog/post/2026-02-04-queues-free-plan/)                                                                                                            |
+| Browser Rendering | 10 min/day                  | [docs](https://developers.cloudflare.com/browser-rendering/)                                                                                                                                          |
+| Images            | 5,000 transformations/month | [docs](https://developers.cloudflare.com/images/pricing/) (used by the `IMAGE_TRANSFORM` binding for resize/watermark, see [0003](./docs/adr/0003-image-processing-via-cloudflare-images-binding.md)) |
 
 ## Troubleshooting
 
