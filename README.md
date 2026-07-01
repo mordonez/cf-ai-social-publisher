@@ -1,5 +1,7 @@
 # cf-ai-social-publisher
 
+> **Why does this exist?** I'm a geek with a cat named Loli who has her own Instagram, [@lola_la_sheriff](https://instagram.com/lola_la_sheriff/), and I wanted a stupidly simple way to fire off a photo from an iPhone Shortcut (or the [HTTP Shortcuts](https://play.google.com/store/apps/details?id=ch.rmy.android.http_shortcuts) Android app) and have it show up on her feed with a caption, without opening Instagram myself. If you want something polished and out-of-the-box, go use [Postiz](https://postiz.com/) — it's more powerful and way more usable. This is for people who'd rather tinker: full control over the prompts, no SaaS in the middle, and an excuse to poke at Cloudflare's Workers AI free tier.
+
 A Cloudflare Workers toolkit for publishing to social media with AI-generated captions: a vision model describes the photo/video, an LLM writes the caption in your own voice, then it gets published for you.
 
 **Today it ships with Instagram support**; the name is deliberately provider-agnostic because the publishing layer is small and isolated (see [Escape hatch](#escape-hatch-building-blocks) below) — a second provider would be a contained addition, not a rewrite.
@@ -89,7 +91,8 @@ import type { PersonaConfig } from 'cf-ai-social-publisher';
 export const persona: PersonaConfig = {
   describeImagePrompt: 'Describe the scene in 3 short sentences...',
   describeVideoFramePrompt: 'Describe this frame in 2 short sentences...',
-  captionSystemPrompt: 'You are the Instagram account of... Write a caption with this tone...',
+  captionSystemPrompt:
+    'You are the Instagram account of... Write a caption with this tone...',
   fallbackCaption: 'New post 📸',
 
   // Optional — default to llama-3.2-11b-vision-instruct / llama-3.3-70b-instruct-fp8-fast / whisper-large-v3-turbo
@@ -109,8 +112,8 @@ import { WATERMARK_PNG_B64 } from './watermark-data'; // your watermark, base64-
 export default createInstagramWorker({
   persona,
   watermarkB64: WATERMARK_PNG_B64,
-  workerName: 'my-instagram-worker',           // same "name" as in wrangler.jsonc
-  deployTokenEnvVar: 'CLOUDFLARE_API_TOKEN',   // only used in the /refresh-token helper message
+  workerName: 'my-instagram-worker', // same "name" as in wrangler.jsonc
+  deployTokenEnvVar: 'CLOUDFLARE_API_TOKEN', // only used in the /refresh-token helper message
   // videoProcessingMessage: 'Your video is being processed...', // optional, defaults to English
 });
 ```
@@ -151,15 +154,15 @@ curl -s -X POST http://localhost:8787/post \
 
 What actually runs in local dev (Miniflare) vs. production:
 
-| Endpoint | AI (caption) | Resize + watermark | Uploads to R2 | Publishes to Instagram |
-|---|:---:|:---:|:---:|:---:|
-| `/health` | — | — | — | — |
-| `/caption` | ✅ | — | — | — |
-| `/preview` | ✅ (optional) | ✅ | — | — |
-| `/post` image, `dry_run=1` | ✅ | — | — | ❌ (skipped by design) |
-| `/post` image, real | ✅ | ✅ | ✅ | ⚠️ needs a real, publicly reachable R2 URL |
-| `/post` video, `dry_run=1` | ✅ (thumbnail/frames) | — | ✅ (then deleted) | ❌ (skipped by design) |
-| `/post` video, real | ✅ | — | ✅ | ⚠️ container is created, but the queue consumer that polls and publishes it **does not run in local dev** — only in production |
+| Endpoint                   |     AI (caption)      | Resize + watermark |   Uploads to R2   |                                                     Publishes to Instagram                                                     |
+| -------------------------- | :-------------------: | :----------------: | :---------------: | :----------------------------------------------------------------------------------------------------------------------------: |
+| `/health`                  |           —           |         —          |         —         |                                                               —                                                                |
+| `/caption`                 |          ✅           |         —          |         —         |                                                               —                                                                |
+| `/preview`                 |     ✅ (optional)     |         ✅         |         —         |                                                               —                                                                |
+| `/post` image, `dry_run=1` |          ✅           |         —          |         —         |                                                     ❌ (skipped by design)                                                     |
+| `/post` image, real        |          ✅           |         ✅         |        ✅         |                                           ⚠️ needs a real, publicly reachable R2 URL                                           |
+| `/post` video, `dry_run=1` | ✅ (thumbnail/frames) |         —          | ✅ (then deleted) |                                                     ❌ (skipped by design)                                                     |
+| `/post` video, real        |          ✅           |         —          |        ✅         | ⚠️ container is created, but the queue consumer that polls and publishes it **does not run in local dev** — only in production |
 
 ## Escape hatch: building blocks
 
@@ -167,28 +170,28 @@ What actually runs in local dev (Miniflare) vs. production:
 
 ## `PersonaConfig`
 
-| Field | Required | Description |
-|---|---|---|
-| `describeImagePrompt` | yes | Prompt for the vision model when describing a photo. |
-| `describeVideoFramePrompt` | yes | Prompt for the vision model when describing a video frame. |
-| `captionSystemPrompt` | yes | System prompt for the LLM that writes the caption from the description. |
-| `fallbackCaption` | yes | Emergency caption used if the AI call fails. |
-| `visionModel` | no | Workers AI model used to describe images. Defaults to `@cf/meta/llama-3.2-11b-vision-instruct`. |
-| `captionModel` | no | Workers AI model used to write the caption. Defaults to `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. |
-| `transcriptionModel` | no | Workers AI model used to transcribe a video's audio track. Defaults to `@cf/openai/whisper-large-v3-turbo`. |
+| Field                      | Required | Description                                                                                                 |
+| -------------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `describeImagePrompt`      | yes      | Prompt for the vision model when describing a photo.                                                        |
+| `describeVideoFramePrompt` | yes      | Prompt for the vision model when describing a video frame.                                                  |
+| `captionSystemPrompt`      | yes      | System prompt for the LLM that writes the caption from the description.                                     |
+| `fallbackCaption`          | yes      | Emergency caption used if the AI call fails.                                                                |
+| `visionModel`              | no       | Workers AI model used to describe images. Defaults to `@cf/meta/llama-3.2-11b-vision-instruct`.             |
+| `captionModel`             | no       | Workers AI model used to write the caption. Defaults to `@cf/meta/llama-3.3-70b-instruct-fp8-fast`.         |
+| `transcriptionModel`       | no       | Workers AI model used to transcribe a video's audio track. Defaults to `@cf/openai/whisper-large-v3-turbo`. |
 
 ## Observability: where to look
 
-| What | Where |
-|---|---|
-| Worker dashboard (metrics, recent invocations, settings) | [dash.cloudflare.com → Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages) |
-| Real-time logs (`wrangler tail`, or the dashboard "Live" tab) | [Real-time logs docs](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/) |
-| Persisted logs (7-day retention, enabled by this template's `observability` block) | [Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) |
-| Workers AI model catalog (capabilities, context size, pricing) | [developers.cloudflare.com/workers-ai/models](https://developers.cloudflare.com/workers-ai/models/) |
-| Workers AI changelog (model deprecations) | [developers.cloudflare.com/changelog/product/workers-ai](https://developers.cloudflare.com/changelog/product/workers-ai/) |
-| R2 dashboard (bucket contents, usage) | [dash.cloudflare.com → R2](https://dash.cloudflare.com/?to=/:account/r2/overview) |
-| Queues docs | [developers.cloudflare.com/queues](https://developers.cloudflare.com/queues/) |
-| Browser Rendering docs | [developers.cloudflare.com/browser-rendering](https://developers.cloudflare.com/browser-rendering/) |
+| What                                                                               | Where                                                                                                                     |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Worker dashboard (metrics, recent invocations, settings)                           | [dash.cloudflare.com → Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages)                      |
+| Real-time logs (`wrangler tail`, or the dashboard "Live" tab)                      | [Real-time logs docs](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/)                       |
+| Persisted logs (7-day retention, enabled by this template's `observability` block) | [Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)                           |
+| Workers AI model catalog (capabilities, context size, pricing)                     | [developers.cloudflare.com/workers-ai/models](https://developers.cloudflare.com/workers-ai/models/)                       |
+| Workers AI changelog (model deprecations)                                          | [developers.cloudflare.com/changelog/product/workers-ai](https://developers.cloudflare.com/changelog/product/workers-ai/) |
+| R2 dashboard (bucket contents, usage)                                              | [dash.cloudflare.com → R2](https://dash.cloudflare.com/?to=/:account/r2/overview)                                         |
+| Queues docs                                                                        | [developers.cloudflare.com/queues](https://developers.cloudflare.com/queues/)                                             |
+| Browser Rendering docs                                                             | [developers.cloudflare.com/browser-rendering](https://developers.cloudflare.com/browser-rendering/)                       |
 
 As of this writing, a batch of Workers AI model deprecations lands **May 30, 2026**, but this library's defaults (`@cf/meta/llama-3.2-11b-vision-instruct` for vision, `@cf/meta/llama-3.3-70b-instruct-fp8-fast` for captioning) are **not** on that list — both stay active. Check the changelog link above before upgrading in case that changes.
 
@@ -196,14 +199,14 @@ As of this writing, a batch of Workers AI model deprecations lands **May 30, 202
 
 Everything below fits inside Cloudflare's Workers Free plan for personal/low-volume use. Limits current as of this writing — always double check the linked docs, as free-tier terms have changed more than once (e.g. Queues moved onto the free plan in Feb 2026).
 
-| Resource | Free limit | Notes |
-|---|---|---|
-| Workers | 100,000 requests/day · 10 ms CPU/request | Most requests here finish well under 10 ms unless HDR processing is enabled. |
-| R2 storage | 10 GB-month | Files are typically deleted right after publishing, so steady-state usage stays near 0. |
-| R2 operations | 1M Class A (writes) + 10M Class B (reads) per month | One post = ~2-4 operations (put + delete, plus retries for video). |
-| Workers AI | 10,000 neurons/day (shared across the whole account) | A vision + caption call for one post costs roughly a few hundred to ~2,000 neurons depending on model and image size. Audio transcription (video posts) adds ~47 neurons per minute of video — negligible next to the vision/caption cost. |
-| Queues | 10,000 operations/day (reads + writes + deletes combined), up to 10,000 queues, 24h max retention on the free tier | Only used for the video-publishing flow; each video is a handful of operations (1 send + status-check retries). |
-| Browser Rendering | 10 minutes/day, 3 concurrent browsers | Only invoked when a video has no embedded thumbnail and frames must be extracted. |
+| Resource          | Free limit                                                                                                         | Notes                                                                                                                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Workers           | 100,000 requests/day · 10 ms CPU/request                                                                           | Most requests here finish well under 10 ms unless HDR processing is enabled.                                                                                                                                                               |
+| R2 storage        | 10 GB-month                                                                                                        | Files are typically deleted right after publishing, so steady-state usage stays near 0.                                                                                                                                                    |
+| R2 operations     | 1M Class A (writes) + 10M Class B (reads) per month                                                                | One post = ~2-4 operations (put + delete, plus retries for video).                                                                                                                                                                         |
+| Workers AI        | 10,000 neurons/day (shared across the whole account)                                                               | A vision + caption call for one post costs roughly a few hundred to ~2,000 neurons depending on model and image size. Audio transcription (video posts) adds ~47 neurons per minute of video — negligible next to the vision/caption cost. |
+| Queues            | 10,000 operations/day (reads + writes + deletes combined), up to 10,000 queues, 24h max retention on the free tier | Only used for the video-publishing flow; each video is a handful of operations (1 send + status-check retries).                                                                                                                            |
+| Browser Rendering | 10 minutes/day, 3 concurrent browsers                                                                              | Only invoked when a video has no embedded thumbnail and frames must be extracted.                                                                                                                                                          |
 
 Sources: [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [R2 limits](https://developers.cloudflare.com/r2/platform/limits/), [Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/), [Queues changelog](https://developers.cloudflare.com/changelog/post/2026-02-04-queues-free-plan/), [Browser Rendering pricing](https://developers.cloudflare.com/changelog/post/2025-07-28-br-pricing/).
 
