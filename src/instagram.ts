@@ -36,6 +36,34 @@ async function createMediaContainer(
   return data.id;
 }
 
+async function createCarouselItemContainer(
+  accountId: string,
+  accessToken: string,
+  imageUrl: string,
+): Promise<string> {
+  const url = new URL(`${BASE}/${accountId}/media`);
+  url.searchParams.set('image_url', imageUrl);
+  url.searchParams.set('is_carousel_item', 'true');
+
+  const data = await graphRequest<{ id: string }>(url, 'POST', accessToken);
+  return data.id;
+}
+
+async function createCarouselContainer(
+  accountId: string,
+  accessToken: string,
+  childIds: string[],
+  caption: string,
+): Promise<string> {
+  const url = new URL(`${BASE}/${accountId}/media`);
+  url.searchParams.set('media_type', 'CAROUSEL');
+  url.searchParams.set('children', childIds.join(','));
+  url.searchParams.set('caption', caption);
+
+  const data = await graphRequest<{ id: string }>(url, 'POST', accessToken);
+  return data.id;
+}
+
 async function waitForContainer(
   containerId: string,
   accessToken: string,
@@ -74,16 +102,45 @@ async function publishMedia(
   return data.id;
 }
 
+/**
+ * Publishes a single image, or — when given an array of more than one URL —
+ * an Instagram carousel post (each image becomes a carousel child container
+ * before the parent CAROUSEL container is created and published).
+ */
 export async function publishToInstagram(
   accountId: string,
   accessToken: string,
-  imageUrl: string,
+  imageUrl: string | string[],
   caption: string,
 ): Promise<string> {
-  const containerId = await createMediaContainer(
+  const imageUrls = Array.isArray(imageUrl) ? imageUrl : [imageUrl];
+
+  if (imageUrls.length === 1) {
+    const containerId = await createMediaContainer(
+      accountId,
+      accessToken,
+      imageUrls[0],
+      caption,
+    );
+    await waitForContainer(containerId, accessToken);
+    return publishMedia(accountId, accessToken, containerId);
+  }
+
+  const childIds: string[] = [];
+  for (const url of imageUrls) {
+    const childId = await createCarouselItemContainer(
+      accountId,
+      accessToken,
+      url,
+    );
+    await waitForContainer(childId, accessToken);
+    childIds.push(childId);
+  }
+
+  const containerId = await createCarouselContainer(
     accountId,
     accessToken,
-    imageUrl,
+    childIds,
     caption,
   );
   await waitForContainer(containerId, accessToken);

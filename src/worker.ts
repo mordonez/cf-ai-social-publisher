@@ -14,10 +14,16 @@ import { processImage, extractJpegFromMp4 } from './image';
 import { extractVideoFrames } from './video-frame';
 import { transcribeVideoAudio } from './transcription';
 
-export type VideoJob = {
-  container_id: string;
-  r2_key: string;
-  caption: string;
+export type PostJob = {
+  type: 'image' | 'carousel' | 'video';
+  /** Raw, untouched original file(s) as uploaded — 1 for image/video, 2-10 for carousel. */
+  r2_keys: string[];
+  /** Parallel to `r2_keys`. */
+  mime_types: string[];
+  /** User-supplied caption only; the consumer generates one via AI when absent. */
+  caption?: string;
+  /** Video only: absent = phase 1 (create the Instagram container), present = phase 2 (poll + publish). */
+  container_id?: string;
 };
 
 export type InstagramWorkerEnv = {
@@ -27,7 +33,8 @@ export type InstagramWorkerEnv = {
   API_KEY: string;
   IMAGES: R2Bucket;
   AI: Ai;
-  VIDEO_QUEUE: Queue<VideoJob>;
+  /** Every post type (image/carousel/video) is queued here. */
+  POST_QUEUE: Queue<PostJob>;
   BROWSER?: Fetcher;
   HDR_ENABLED?: string;
 };
@@ -40,25 +47,154 @@ export type InstagramWorkerConfig = {
   workerName: string;
   /** Shell env var holding this worker's Cloudflare API token — shown in the /refresh-token helper message. */
   deployTokenEnvVar: string;
-  /** Message returned by /post while a video is queued for publishing. Defaults to an English message. */
-  videoProcessingMessage?: string;
+  /** Message returned by /post while a post (image, carousel, or video) is queued for publishing. Defaults to an English message. */
+  postProcessingMessage?: string;
 };
 
-const DEFAULT_VIDEO_PROCESSING_MESSAGE =
-  'Your video is being processed by Instagram. It will be published automatically in a few minutes.';
+const DEFAULT_POST_PROCESSING_MESSAGE =
+  'Your post is being processed. It will be published automatically in a few minutes.';
+
+// Instagram Graph API's Content Publishing API caps carousel posts at 10
+// children (the Instagram app itself allows up to 20 slides, but that limit
+// doesn't apply to the API this worker calls).
+const MAX_IMAGES_PER_POST = 10;
+
+/** Single image (`generateCaption`) or, for a carousel, one AI call per photo joined into a caption (`generateCaptionFromImages`). */
+async function resolveImageCaption(
+  buffers: ArrayBuffer[],
+  mimeTypes: string[],
+  ai: Ai,
+  persona: PersonaConfig,
+): Promise<string> {
+  let caption = '';
+  try {
+    caption =
+      buffers.length > 1
+        ? await generateCaptionFromImages(
+            buffers.map((buffer, i) => ({ buffer, mimeType: mimeTypes[i] })),
+            ai,
+            persona,
+          )
+        : await generateCaption(buffers[0], mimeTypes[0], ai, persona);
+  } catch (e) {
+    console.error(
+      'caption_ai_failed',
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+  return caption || persona.fallbackCaption;
+}
+
+type VideoCaptionResult = {
+  caption: string;
+  captionSource: string;
+  frames: number;
+};
+
+async function resolveVideoCaption(
+  videoBuffer: ArrayBuffer,
+  videoUrl: string,
+  env: InstagramWorkerEnv,
+  persona: PersonaConfig,
+): Promise<VideoCaptionResult> {
+  // Kicked off before frame extraction so its network latency overlaps with it.
+  const audioTranscriptPromise = transcribeVideoAudio(
+    videoBuffer,
+    env.AI,
+    persona.transcriptionModel,
+  ).catch((e) => {
+    console.error(
+      'audio_transcription_failed',
+      e instanceof Error ? e.message : String(e),
+    );
+    return '';
+  });
+
+  let thumbnail = extractJpegFromMp4(videoBuffer);
+  let frames: ArrayBuffer[] = [];
+  let captionSource = 'fallback';
+  if (thumbnail) {
+    console.log(
+      'video_thumbnail_found',
+      `${Math.round(thumbnail.byteLength / 1024)}KB`,
+    );
+    frames = [thumbnail];
+    captionSource = 'embedded_thumbnail';
+  } else if (env.BROWSER) {
+    console.log('video_extract_frames_start');
+    try {
+      frames = await extractVideoFrames(videoUrl, env.BROWSER, 3);
+      console.log(
+        'video_frames_extracted',
+        frames.length,
+        frames.map((f) => `${Math.round(f.byteLength / 1024)}KB`).join(','),
+      );
+      captionSource = frames.length > 1 ? 'browser_frames' : 'browser_frame';
+    } catch (e) {
+      console.error(
+        'video_frames_extract_failed',
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  } else {
+    console.log('video_no_thumbnail');
+  }
+
+  const audioTranscript = await audioTranscriptPromise;
+  if (audioTranscript)
+    console.log('video_audio_transcript', audioTranscript.slice(0, 200));
+
+  let caption = '';
+  if (frames.length > 0) {
+    try {
+      caption = await generateCaptionFromImages(
+        frames.map((frame) => ({ buffer: frame, mimeType: 'image/jpeg' })),
+        env.AI,
+        persona,
+        audioTranscript || undefined,
+      );
+    } catch (e) {
+      console.error(
+        'caption_ai_multi_frame_failed',
+        e instanceof Error ? e.message : String(e),
+      );
+      try {
+        caption = await generateCaption(
+          frames[0],
+          'image/jpeg',
+          env.AI,
+          persona,
+        );
+        captionSource = `${captionSource}_first_frame_fallback`;
+      } catch (fallbackErr) {
+        console.error(
+          'caption_ai_failed',
+          fallbackErr instanceof Error
+            ? fallbackErr.message
+            : String(fallbackErr),
+        );
+      }
+    }
+  }
+  if (!caption) caption = persona.fallbackCaption;
+
+  return { caption, captionSource, frames: frames.length };
+}
 
 /**
  * Batteries-included Instagram posting worker: health check, token refresh,
  * caption generation (photo/video), preview, and publish — wired to Hono +
- * a video-processing queue. Covers the common case (one persona per
- * account); for custom routes or a different auth model, compose the
- * exported building blocks (generateCaption, publishToInstagram, processImage...)
- * directly instead of this factory.
+ * a queue that does all AI captioning, image processing, Instagram
+ * container creation/polling, and publishing for every post type (image,
+ * carousel, video), off the request thread. Covers the common case (one
+ * persona per account); for custom routes or a different auth model,
+ * compose the exported building blocks (generateCaption, publishToInstagram,
+ * processImage...) directly instead of this factory.
  */
 export function createInstagramWorker(config: InstagramWorkerConfig) {
   const { persona, watermarkB64, workerName, deployTokenEnvVar } = config;
-  const videoProcessingMessage =
-    config.videoProcessingMessage ?? DEFAULT_VIDEO_PROCESSING_MESSAGE;
+  const postProcessingMessage =
+    config.postProcessingMessage ?? DEFAULT_POST_PROCESSING_MESSAGE;
   const app = new Hono<{ Bindings: InstagramWorkerEnv }>();
 
   app.get('/health', (c) => c.json({ ok: true }));
@@ -204,21 +340,23 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
       return c.json({ error: 'Expected multipart/form-data' }, 400);
     }
 
-    const file = formData.get('image');
+    const files = formData
+      .getAll('image')
+      .filter((f): f is File => f instanceof File);
     const captionInput = formData.get('caption');
     const dryRun = formData.get('dry_run') === '1';
-    if (!(file instanceof File))
+    if (files.length === 0)
       return c.json({ error: '`image` (file) is required' }, 400);
+    if (files.length > MAX_IMAGES_PER_POST)
+      return c.json(
+        { error: `Maximum ${MAX_IMAGES_PER_POST} images per post` },
+        400,
+      );
 
+    const file = files[0];
     const isVideo = file.type.startsWith('video/');
-    const mimeType = file.type || (isVideo ? 'video/mp4' : 'image/jpeg');
-    const ext = file.name.split('.').pop() ?? (isVideo ? 'mp4' : 'jpg');
-    const key = `${crypto.randomUUID()}.${ext}`;
-
-    const {
-      INSTAGRAM_BUSINESS_ACCOUNT_ID: accountId,
-      INSTAGRAM_ACCESS_TOKEN: accessToken,
-    } = c.env;
+    if (isVideo && files.length > 1)
+      return c.json({ error: 'Only one video allowed per post' }, 400);
 
     let caption = '';
     if (
@@ -230,24 +368,42 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
     }
 
     if (isVideo) {
+      const mimeType = file.type || 'video/mp4';
+      const ext = file.name.split('.').pop() ?? 'mp4';
       const videoBuffer = await file.arrayBuffer();
 
-      // Kicked off before the R2 upload so its network latency overlaps with
-      // both the upload and the frame extraction below.
-      const audioTranscriptPromise = caption
-        ? Promise.resolve('')
-        : transcribeVideoAudio(
-            videoBuffer,
-            c.env.AI,
-            persona.transcriptionModel,
-          ).catch((e) => {
-            console.error(
-              'audio_transcription_failed',
-              e instanceof Error ? e.message : String(e),
-            );
-            return '';
-          });
+      if (dryRun) {
+        const key = `${crypto.randomUUID()}.${ext}`;
+        await c.env.IMAGES.put(key, videoBuffer, {
+          httpMetadata: { contentType: mimeType },
+        });
+        const videoUrl = `${c.env.R2_PUBLIC_URL}/${key}`;
 
+        let captionSource = 'provided';
+        let frameCount = 0;
+        if (!caption) {
+          const result = await resolveVideoCaption(
+            videoBuffer,
+            videoUrl,
+            c.env,
+            persona,
+          );
+          caption = result.caption;
+          captionSource = result.captionSource;
+          frameCount = result.frames;
+        }
+
+        await c.env.IMAGES.delete(key);
+        return c.json({
+          dry_run: true,
+          type: 'video',
+          caption,
+          caption_source: captionSource,
+          frames: frameCount,
+        });
+      }
+
+      const key = `${crypto.randomUUID()}.${ext}`;
       await c.env.IMAGES.put(key, videoBuffer, {
         httpMetadata: { contentType: mimeType },
       });
@@ -257,233 +413,231 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
         `${Math.round(videoBuffer.byteLength / 1024)}KB`,
       );
 
-      const videoUrl = `${c.env.R2_PUBLIC_URL}/${key}`;
-
-      if (!caption) {
-        let thumbnail = extractJpegFromMp4(videoBuffer);
-        let frames: ArrayBuffer[] = [];
-        let captionSource = 'fallback';
-        if (thumbnail) {
-          console.log(
-            'video_thumbnail_found',
-            `${Math.round(thumbnail.byteLength / 1024)}KB`,
-          );
-          frames = [thumbnail];
-          captionSource = 'embedded_thumbnail';
-        } else if (c.env.BROWSER) {
-          console.log('video_extract_frames_start');
-          try {
-            frames = await extractVideoFrames(videoUrl, c.env.BROWSER, 3);
-            console.log(
-              'video_frames_extracted',
-              frames.length,
-              frames
-                .map((frame) => `${Math.round(frame.byteLength / 1024)}KB`)
-                .join(','),
-            );
-            captionSource =
-              frames.length > 1 ? 'browser_frames' : 'browser_frame';
-          } catch (e) {
-            console.error(
-              'video_frames_extract_failed',
-              e instanceof Error ? e.message : String(e),
-            );
-          }
-        } else {
-          console.log('video_no_thumbnail');
-        }
-
-        const audioTranscript = await audioTranscriptPromise;
-        if (audioTranscript)
-          console.log('video_audio_transcript', audioTranscript.slice(0, 200));
-
-        if (frames.length > 0) {
-          try {
-            caption = await generateCaptionFromImages(
-              frames.map((frame) => ({
-                buffer: frame,
-                mimeType: 'image/jpeg',
-              })),
-              c.env.AI,
-              persona,
-              audioTranscript || undefined,
-            );
-          } catch (e) {
-            console.error(
-              'caption_ai_multi_frame_failed',
-              e instanceof Error ? e.message : String(e),
-            );
-            try {
-              caption = await generateCaption(
-                frames[0],
-                'image/jpeg',
-                c.env.AI,
-                persona,
-              );
-              captionSource = `${captionSource}_first_frame_fallback`;
-            } catch (fallbackErr) {
-              console.error(
-                'caption_ai_failed',
-                fallbackErr instanceof Error
-                  ? fallbackErr.message
-                  : String(fallbackErr),
-              );
-            }
-          }
-        }
-        if (!caption) caption = persona.fallbackCaption;
-
-        if (dryRun) {
-          await c.env.IMAGES.delete(key);
-          return c.json({
-            dry_run: true,
-            type: 'video',
-            caption,
-            caption_source: captionSource,
-            frames: frames.length,
-          });
-        }
-      } else if (dryRun) {
-        await c.env.IMAGES.delete(key);
-        return c.json({
-          dry_run: true,
-          type: 'video',
-          caption,
-          caption_source: 'provided',
-          frames: 0,
-        });
-      }
-
-      let container_id: string;
-      try {
-        container_id = await createVideoContainer(
-          accountId,
-          accessToken,
-          videoUrl,
-          caption,
-        );
-      } catch (err) {
-        await c.env.IMAGES.delete(key);
-        const message = err instanceof Error ? err.message : 'Unknown error';
-        console.error('video_container_failed', message);
-        return c.json({ error: message }, 502);
-      }
-      console.log('video_container_created', container_id);
-
-      await c.env.VIDEO_QUEUE.send({ container_id, r2_key: key, caption });
+      const job: PostJob = {
+        type: 'video',
+        r2_keys: [key],
+        mime_types: [mimeType],
+        caption: caption || undefined,
+      };
+      await c.env.POST_QUEUE.send(job);
 
       return c.json(
-        { status: 'processing', container_id, message: videoProcessingMessage },
+        { status: 'processing', type: 'video', message: postProcessingMessage },
         202,
       );
     }
 
-    // Image flow
-    const imageBuffer = await file.arrayBuffer();
+    // Image / carousel flow
+    const isCarousel = files.length > 1;
+    const mimeTypes = files.map((f) => f.type || 'image/jpeg');
+    const imageBuffers = await Promise.all(files.map((f) => f.arrayBuffer()));
 
-    if (!caption) {
-      try {
-        caption = await generateCaption(
-          imageBuffer,
-          mimeType,
+    if (dryRun) {
+      if (!caption) {
+        caption = await resolveImageCaption(
+          imageBuffers,
+          mimeTypes,
           c.env.AI,
           persona,
         );
-      } catch (e) {
-        console.error(
-          'caption_ai_failed',
-          e instanceof Error ? e.message : String(e),
-        );
       }
-      if (!caption) caption = persona.fallbackCaption;
-    }
-
-    if (dryRun) {
-      return c.json({ dry_run: true, type: 'image', caption });
-    }
-
-    const hdr = c.env.HDR_ENABLED === '1';
-    let processedBuffer: ArrayBuffer;
-    let outputMimeType = 'image/jpeg';
-    let outputExt = 'jpg';
-    try {
-      processedBuffer = await processImage(imageBuffer, mimeType, {
-        hdr,
-        watermarkB64,
+      return c.json({
+        dry_run: true,
+        type: isCarousel ? 'carousel' : 'image',
+        caption,
+        images: files.length,
       });
-      console.log(
-        'img_processed',
-        `hdr=${hdr}`,
-        `${Math.round(processedBuffer.byteLength / 1024)}KB`,
-      );
-    } catch (e) {
-      console.error(
-        'img_process_failed',
-        e instanceof Error ? e.message : String(e),
-      );
-      processedBuffer = imageBuffer;
-      outputMimeType = mimeType;
-      outputExt = ext;
     }
 
-    const imageKey = `${crypto.randomUUID()}.${outputExt}`;
-    await c.env.IMAGES.put(imageKey, processedBuffer, {
-      httpMetadata: { contentType: outputMimeType },
-    });
-    console.log(
-      'r2_uploaded',
-      imageKey,
-      `${Math.round(processedBuffer.byteLength / 1024)}KB`,
+    const imageKeys: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const ext = files[i].name.split('.').pop() ?? 'jpg';
+      const key = `${crypto.randomUUID()}.${ext}`;
+      await c.env.IMAGES.put(key, imageBuffers[i], {
+        httpMetadata: { contentType: mimeTypes[i] },
+      });
+      imageKeys.push(key);
+    }
+    console.log('r2_uploaded', imageKeys.join(','));
+
+    const job: PostJob = {
+      type: isCarousel ? 'carousel' : 'image',
+      r2_keys: imageKeys,
+      mime_types: mimeTypes,
+      caption: caption || undefined,
+    };
+    await c.env.POST_QUEUE.send(job);
+
+    return c.json(
+      { status: 'processing', type: job.type, message: postProcessingMessage },
+      202,
+    );
+  });
+
+  async function processImageJob(
+    msg: Message<PostJob>,
+    env: InstagramWorkerEnv,
+  ): Promise<void> {
+    const job = msg.body;
+    const buffers = await Promise.all(
+      job.r2_keys.map(async (key) => {
+        const obj = await env.IMAGES.get(key);
+        if (!obj) throw new Error(`Missing R2 object: ${key}`);
+        return obj.arrayBuffer();
+      }),
     );
 
-    const imageUrl = `${c.env.R2_PUBLIC_URL}/${imageKey}`;
+    const caption =
+      job.caption ||
+      (await resolveImageCaption(buffers, job.mime_types, env.AI, persona));
+
+    const hdr = env.HDR_ENABLED === '1';
+    const processedKeys: string[] = [];
+    const imageUrls: string[] = [];
 
     try {
+      for (let i = 0; i < buffers.length; i++) {
+        const mimeType = job.mime_types[i];
+        const rawExt = job.r2_keys[i].split('.').pop() ?? 'jpg';
+        let processedBuffer: ArrayBuffer;
+        let outputMimeType = 'image/jpeg';
+        let outputExt = 'jpg';
+        try {
+          processedBuffer = await processImage(buffers[i], mimeType, {
+            hdr,
+            watermarkB64,
+          });
+        } catch (e) {
+          console.error(
+            'img_process_failed',
+            e instanceof Error ? e.message : String(e),
+          );
+          processedBuffer = buffers[i];
+          outputMimeType = mimeType;
+          outputExt = rawExt;
+        }
+
+        const processedKey = `${crypto.randomUUID()}.${outputExt}`;
+        await env.IMAGES.put(processedKey, processedBuffer, {
+          httpMetadata: { contentType: outputMimeType },
+        });
+        processedKeys.push(processedKey);
+        imageUrls.push(`${env.R2_PUBLIC_URL}/${processedKey}`);
+      }
+
       const postId = await publishToInstagram(
-        accountId,
-        accessToken,
-        imageUrl,
+        env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+        env.INSTAGRAM_ACCESS_TOKEN,
+        job.type === 'carousel' ? imageUrls : imageUrls[0],
         caption,
       );
       console.log('published', postId);
-      return c.json({ success: true, post_id: postId, caption });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      console.error('post_failed', message);
-      return c.json({ error: message }, 502);
-    } finally {
-      await c.env.IMAGES.delete(imageKey);
+    } catch (e) {
+      // Only the disposable processed copies are cleaned up here — the raw
+      // originals in job.r2_keys must survive so a retry can reprocess them.
+      for (const key of processedKeys) {
+        await env.IMAGES.delete(key).catch(() => {});
+      }
+      throw e;
     }
-  });
 
-  async function handleVideoQueue(
-    batch: MessageBatch<VideoJob>,
+    msg.ack();
+    for (const key of [...job.r2_keys, ...processedKeys]) {
+      await env.IMAGES.delete(key).catch((e) =>
+        console.error(
+          'r2_cleanup_failed',
+          key,
+          e instanceof Error ? e.message : String(e),
+        ),
+      );
+    }
+  }
+
+  async function processVideoJob(
+    msg: Message<PostJob>,
+    env: InstagramWorkerEnv,
+  ): Promise<void> {
+    const job = msg.body;
+    const r2_key = job.r2_keys[0];
+
+    if (!job.container_id) {
+      // Phase 1: resolve the caption and create the Instagram media container.
+      const obj = await env.IMAGES.get(r2_key);
+      if (!obj) throw new Error(`Missing R2 object: ${r2_key}`);
+      const videoBuffer = await obj.arrayBuffer();
+      const videoUrl = `${env.R2_PUBLIC_URL}/${r2_key}`;
+
+      const caption =
+        job.caption ||
+        (await resolveVideoCaption(videoBuffer, videoUrl, env, persona))
+          .caption;
+
+      let container_id: string;
+      try {
+        container_id = await createVideoContainer(
+          env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+          env.INSTAGRAM_ACCESS_TOKEN,
+          videoUrl,
+          caption,
+        );
+      } catch (e) {
+        // Terminal: an unpublishable video won't become publishable on retry.
+        console.error(
+          'video_container_failed',
+          e instanceof Error ? e.message : String(e),
+        );
+        await env.IMAGES.delete(r2_key).catch(() => {});
+        msg.ack();
+        return;
+      }
+      console.log('video_container_created', container_id);
+
+      await env.POST_QUEUE.send({ ...job, caption, container_id });
+      msg.ack();
+      return;
+    }
+
+    // Phase 2: poll until Instagram finishes processing, then publish.
+    const status = await checkContainerStatus(
+      job.container_id,
+      env.INSTAGRAM_ACCESS_TOKEN,
+    );
+    console.log('video_container_status', job.container_id, status);
+
+    if (status === 'FINISHED') {
+      const postId = await publishFromContainer(
+        env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+        env.INSTAGRAM_ACCESS_TOKEN,
+        job.container_id,
+      );
+      console.log('video_published', postId);
+      msg.ack();
+      await env.IMAGES.delete(r2_key).catch((e) =>
+        console.error(
+          'r2_cleanup_failed',
+          r2_key,
+          e instanceof Error ? e.message : String(e),
+        ),
+      );
+    } else if (status === 'ERROR' || status === 'EXPIRED') {
+      console.error('video_container_failed', job.container_id, status);
+      await env.IMAGES.delete(r2_key).catch(() => {});
+      msg.ack();
+    } else {
+      msg.retry({ delaySeconds: 30 });
+    }
+  }
+
+  async function handlePostQueue(
+    batch: MessageBatch<PostJob>,
     env: InstagramWorkerEnv,
   ): Promise<void> {
     for (const msg of batch.messages) {
-      const { container_id, r2_key, caption } = msg.body;
       try {
-        const status = await checkContainerStatus(
-          container_id,
-          env.INSTAGRAM_ACCESS_TOKEN,
-        );
-        console.log('video_container_status', container_id, status);
-
-        if (status === 'FINISHED') {
-          const postId = await publishFromContainer(
-            env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
-            env.INSTAGRAM_ACCESS_TOKEN,
-            container_id,
-          );
-          console.log('video_published', postId);
-          await env.IMAGES.delete(r2_key);
-          msg.ack();
-        } else if (status === 'ERROR' || status === 'EXPIRED') {
-          console.error('video_container_failed', container_id, status);
-          await env.IMAGES.delete(r2_key);
-          msg.ack();
+        if (msg.body.type === 'video') {
+          await processVideoJob(msg, env);
         } else {
-          msg.retry({ delaySeconds: 30 });
+          await processImageJob(msg, env);
         }
       } catch (e) {
         console.error(
@@ -497,6 +651,6 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
 
   return {
     fetch: app.fetch,
-    queue: handleVideoQueue,
+    queue: handlePostQueue,
   };
 }

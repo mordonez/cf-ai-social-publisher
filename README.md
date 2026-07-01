@@ -4,11 +4,39 @@
 
 A Cloudflare Workers toolkit for publishing to social media with AI-generated captions: a vision model describes the photo/video, an LLM writes the caption in your voice, then it publishes for you. Ships today with full Instagram support — the publishing layer is small and swappable (see [Escape hatch](#escape-hatch-building-blocks)), so a second provider is a contained addition, not a rewrite.
 
-- **Publishing**: Instagram Graph API — photos, videos/Reels via container + queue, token refresh.
+- **Publishing**: Instagram Graph API — photos, carousels (up to 10 images), videos/Reels, token refresh. Every post type is queued: `/post` uploads the raw file(s) and returns immediately, a single queue does all the AI captioning, image processing, and Instagram container creation/polling/publishing off the request thread.
 - **Captions**: vision model describes the scene, an LLM writes it in your persona's voice.
 - **Image processing**: resize, optional HDR, watermark.
 - **Video**: frame extraction (Browser Rendering) + audio transcription (Whisper), both fed into the caption prompt.
-- **`createInstagramWorker(config)`**: a full Worker — health check, auth, `/caption`, `/preview`, `/post`, video queue — in ~10 lines.
+- **`createInstagramWorker(config)`**: a full Worker — health check, auth, `/caption`, `/preview`, `/post`, post-processing queue — in ~10 lines.
+
+## Architecture
+
+`/post` only validates the request, uploads the raw file(s) to R2, and enqueues a job — every post type (image, carousel, video) is processed the same way, off the request thread. Video needs two passes through the queue because Instagram's own processing takes minutes: phase 1 creates the container, phase 2 polls it until it's ready to publish.
+
+```mermaid
+flowchart TD
+    A["POST /post — image(s)/video + optional caption"] --> B["validate + upload raw file(s) to R2"]
+    B --> C["enqueue a PostJob"]
+    C --> D["202 — respond immediately"]
+    C -.-> Q[["POST_QUEUE"]]
+
+    Q --> E{"job.type"}
+
+    E -->|"image / carousel"| F["caption via Workers AI (if none given)<br/>resize + watermark, upload processed image(s)"]
+    F --> G["create Instagram container(s) + publish"]
+    G --> H["delete R2 keys"]
+
+    E -->|"video — phase 1"| I["caption via Workers AI (if none given)<br/>create video container"]
+    I -->|"re-enqueue with container_id"| Q
+
+    E -->|"video — phase 2"| J["poll container status"]
+    J -->|"still processing"| Q
+    J -->|"FINISHED"| K["publish + delete R2 key"]
+
+    G --> IG(("Instagram Graph API"))
+    K --> IG
+```
 
 ## Quick start
 
@@ -33,7 +61,7 @@ npm install cf-ai-social-publisher
 
 # 4. Generate wrangler.jsonc and provision the Cloudflare resources
 BUCKET="${WORKER_NAME}-images"
-QUEUE="${WORKER_NAME}-video-queue"
+QUEUE="${WORKER_NAME}-post-queue"
 
 cat > wrangler.jsonc <<EOF
 {
@@ -49,7 +77,7 @@ cat > wrangler.jsonc <<EOF
 	},
 	"r2_buckets": [{ "binding": "IMAGES", "bucket_name": "${BUCKET}" }],
 	"queues": {
-		"producers": [{ "binding": "VIDEO_QUEUE", "queue": "${QUEUE}" }],
+		"producers": [{ "binding": "POST_QUEUE", "queue": "${QUEUE}" }],
 		"consumers": [{ "queue": "${QUEUE}", "max_batch_size": 1, "max_retries": 20, "retry_delay": 30 }]
 	},
 	"ai": { "binding": "AI" },
@@ -116,12 +144,22 @@ curl -s http://localhost:8787/health
 curl -s -X POST http://localhost:8787/caption \
   -H "Authorization: Bearer $API_KEY" -F "image=@photo.jpg" | jq .
 
-# dry_run=1 runs the whole pipeline (caption + R2 upload) without calling Instagram
+# dry_run=1 previews the caption without calling Instagram or touching the queue
 curl -s -X POST http://localhost:8787/post \
   -H "Authorization: Bearer $API_KEY" -F "image=@photo.jpg" -F "dry_run=1" | jq .
+
+# Send multiple `image` parts to publish a carousel (max 10 — Instagram Graph API's limit)
+curl -s -X POST http://localhost:8787/post \
+  -H "Authorization: Bearer $API_KEY" \
+  -F "image=@photo1.jpg" -F "image=@photo2.jpg" -F "dry_run=1" | jq .
+
+# A real (non-dry-run) post is queued and returns immediately — no caption/post_id in the response
+curl -s -X POST http://localhost:8787/post \
+  -H "Authorization: Bearer $API_KEY" -F "image=@photo.jpg" | jq .
+# => { "status": "processing", "type": "image", "message": "..." }
 ```
 
-Two things don't work locally: publishing a real image (needs a publicly reachable R2 URL) and finishing a video publish (the queue consumer only runs in production). Use `dry_run=1` to test the rest of the pipeline for both.
+`wrangler dev` simulates Queues locally too, so the whole real-post pipeline (captioning, image processing, Instagram container creation/polling, publishing) runs the same locally as in production — watch `wrangler dev`'s console for the consumer's logs. The one thing that still needs production-like setup is Instagram actually being able to fetch the media: it requires a **publicly reachable** R2 URL (`wrangler r2 bucket dev-url enable <bucket>`) and real Instagram credentials. `dry_run=1` remains the fully-offline option — it never uploads processed media or touches the queue.
 
 ## Escape hatch: building blocks
 
@@ -150,7 +188,7 @@ Two things don't work locally: publishing a real image (needs a publicly reachab
 - **Queue creation fails ("invalid settings")** — Wrangler v3 from the C3 template, upgrade to v4+ (see Quick start).
 - **401 everywhere** — `Authorization: Bearer <API_KEY>` doesn't match the `API_KEY` secret.
 - **Instagram can't fetch the media** — enable R2 Public Access: `wrangler r2 bucket dev-url enable <bucket>`.
-- **Video never publishes locally** — expected, the queue consumer only runs in production.
+- **Nothing publishes for real locally** — expected unless the R2 bucket has public dev access enabled and real Instagram credentials are set; `dry_run=1` is the offline option.
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "cf-ai-social-publisher",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Cloudflare Workers toolkit for AI-generated social captions (Workers AI vision + LLM), image/video processing, and publishing — batteries-included Instagram support today, more providers welcome.",
   "keywords": [
     "cloudflare-workers",
