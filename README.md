@@ -1,14 +1,27 @@
 # cf-ai-social-publisher
 
+[![npm version](https://img.shields.io/npm/v/cf-ai-social-publisher.svg)](https://www.npmjs.com/package/cf-ai-social-publisher)
+[![license](https://img.shields.io/npm/l/cf-ai-social-publisher.svg)](./LICENSE)
+
 > **Why does this exist?** I'm a geek with a cat named Loli who has her own Instagram, [@lola_la_sheriff](https://instagram.com/lola_la_sheriff/), and I wanted a stupidly simple way to fire off a photo from an iPhone Shortcut (or [HTTP Shortcuts](https://play.google.com/store/apps/details?id=ch.rmy.android.http_shortcuts) on Android) and have it show up on her feed with a caption. If you want something polished and out-of-the-box, use [Postiz](https://postiz.com/) instead — more powerful, way more usable. This is for people who'd rather tinker: full control over the prompts, no SaaS in the middle, and an excuse to poke at Cloudflare's Workers AI free tier.
 
 A Cloudflare Workers toolkit for publishing to social media with AI-generated captions: a vision model describes the photo/video, an LLM writes the caption in your voice, then it publishes for you. Ships today with full Instagram support — the publishing layer is small and swappable (see [Escape hatch](#escape-hatch-building-blocks)), so a second provider is a contained addition, not a rewrite.
 
-- **Publishing**: Instagram Graph API — photos, carousels (up to 10 images), videos/Reels, token refresh. Every post type is queued: `/post` uploads the raw file(s) and returns immediately, a single queue does all the AI captioning, image processing, and Instagram container creation/polling/publishing off the request thread.
+- **Publishing**: Instagram Graph API — photos, carousels (up to 10 images), videos/Reels, token refresh.
 - **Captions**: vision model describes the scene, an LLM writes it in your persona's voice.
 - **Image processing**: resize, optional HDR, watermark.
 - **Video**: frame extraction (Browser Rendering) + audio transcription (Whisper), both fed into the caption prompt.
 - **`createInstagramWorker(config)`**: a full Worker — health check, auth, `/caption`, `/preview`, `/post`, post-processing queue — in ~10 lines.
+
+## Contents
+
+- [Architecture](#architecture)
+- [Quick start](#quick-start)
+- [Try it locally](#try-it-locally)
+- [Escape hatch: building blocks](#escape-hatch-building-blocks)
+- [`PersonaConfig`](#personaconfig)
+- [Where to look](#where-to-look)
+- [Troubleshooting](#troubleshooting)
 
 ## Architecture
 
@@ -189,6 +202,7 @@ curl -s -X POST http://localhost:8787/post \
 - **401 everywhere** — `Authorization: Bearer <API_KEY>` doesn't match the `API_KEY` secret.
 - **Instagram can't fetch the media** — enable R2 Public Access: `wrangler r2 bucket dev-url enable <bucket>`.
 - **Nothing publishes for real locally** — expected unless the R2 bucket has public dev access enabled and real Instagram credentials are set; `dry_run=1` is the offline option.
+- **HTTP Shortcuts "Multiple Files" parameter gives `` `image` (file) is required `` even with one file** — that parameter type always sends the field as `image[]`, not `image`. `/post` accepts both, so this should just work; if it doesn't, double check the parameter name is exactly `image`.
 
 ## License
 

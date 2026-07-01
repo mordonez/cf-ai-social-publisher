@@ -340,9 +340,13 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
       return c.json({ error: 'Expected multipart/form-data' }, 400);
     }
 
-    const files = formData
-      .getAll('image')
-      .filter((f): f is File => f instanceof File);
+    // Accept both `image` (repeated field name) and `image[]` — some HTTP
+    // clients (e.g. HTTP Shortcuts' "Multiple Files" parameter type) always
+    // suffix the field name with `[]`, even for a single file.
+    const files = [
+      ...formData.getAll('image'),
+      ...formData.getAll('image[]'),
+    ].filter((f): f is File => f instanceof File);
     const captionInput = formData.get('caption');
     const dryRun = formData.get('dry_run') === '1';
     if (files.length === 0)

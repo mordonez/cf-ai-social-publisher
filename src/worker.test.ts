@@ -144,6 +144,22 @@ describe('POST /post — dry_run', () => {
     expect(env.POST_QUEUE.send).not.toHaveBeenCalled();
   });
 
+  it('accepts `image[]` — some clients (e.g. HTTP Shortcuts) always suffix the field name', async () => {
+    const env = baseEnv();
+    const form = new FormData();
+    form.append(
+      'image[]',
+      new File(['abc'], 'photo.jpg', { type: 'image/jpeg' }),
+    );
+    form.set('dry_run', '1');
+
+    const res = await req('/post', env, authedForm(form));
+    const body = (await res.json()) as any;
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ dry_run: true, type: 'image', images: 1 });
+  });
+
   it('previews a carousel when several `image` parts are sent', async () => {
     const env = baseEnv();
     const form = new FormData();
