@@ -1,6 +1,9 @@
 import puppeteer from '@cloudflare/puppeteer';
 
-export async function extractVideoFrame(videoUrl: string, browserBinding: Fetcher): Promise<ArrayBuffer | null> {
+export async function extractVideoFrame(
+  videoUrl: string,
+  browserBinding: Fetcher,
+): Promise<ArrayBuffer | null> {
   const frames = await extractVideoFrames(videoUrl, browserBinding, 1);
   return frames[0] ?? null;
 }
@@ -29,51 +32,67 @@ export async function extractVideoFrames(
   </body>
 </html>`);
 
-    const seekTimes = await page.evaluate(async (requestedFrames: number) => {
-      const video = (globalThis as any).document.getElementById('video');
-      if (!video) throw new Error('Video element missing');
+    const seekTimes = await page.evaluate(
+      async (requestedFrames: number) => {
+        const video = (globalThis as any).document.getElementById('video');
+        if (!video) throw new Error('Video element missing');
 
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timed out loading video metadata')), 10_000);
-        const fail = () => {
-          clearTimeout(timeout);
-          reject(new Error('Video failed to load'));
-        };
-        const loaded = () => {
-          clearTimeout(timeout);
-          resolve();
-        };
-        video.addEventListener('error', fail, { once: true });
-        if (video.readyState >= 1) loaded();
-        else video.addEventListener('loadedmetadata', loaded, { once: true });
-        video.load();
-      });
-
-      if (video.readyState < 2) {
         await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('Timed out loading video frame')), 10_000);
-          const done = () => {
+          const timeout = setTimeout(
+            () => reject(new Error('Timed out loading video metadata')),
+            10_000,
+          );
+          const fail = () => {
+            clearTimeout(timeout);
+            reject(new Error('Video failed to load'));
+          };
+          const loaded = () => {
             clearTimeout(timeout);
             resolve();
           };
-          video.addEventListener('loadeddata', done, { once: true });
+          video.addEventListener('error', fail, { once: true });
+          if (video.readyState >= 1) loaded();
+          else video.addEventListener('loadedmetadata', loaded, { once: true });
+          video.load();
         });
-      }
 
-      if (!Number.isFinite(video.duration) || video.duration <= 0 || requestedFrames <= 1) {
-        return [0];
-      }
+        if (video.readyState < 2) {
+          await new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(
+              () => reject(new Error('Timed out loading video frame')),
+              10_000,
+            );
+            const done = () => {
+              clearTimeout(timeout);
+              resolve();
+            };
+            video.addEventListener('loadeddata', done, { once: true });
+          });
+        }
 
-      if (requestedFrames === 2) {
-        return [Math.min(0.5, video.duration * 0.1), Math.max(0, video.duration * 0.66)];
-      }
+        if (
+          !Number.isFinite(video.duration) ||
+          video.duration <= 0 ||
+          requestedFrames <= 1
+        ) {
+          return [0];
+        }
 
-      return [
-        Math.min(0.5, video.duration * 0.1),
-        video.duration * 0.5,
-        Math.max(0, video.duration - 0.8),
-      ];
-    }, Math.max(1, Math.min(3, maxFrames)));
+        if (requestedFrames === 2) {
+          return [
+            Math.min(0.5, video.duration * 0.1),
+            Math.max(0, video.duration * 0.66),
+          ];
+        }
+
+        return [
+          Math.min(0.5, video.duration * 0.1),
+          video.duration * 0.5,
+          Math.max(0, video.duration - 0.8),
+        ];
+      },
+      Math.max(1, Math.min(3, maxFrames)),
+    );
 
     const video = await page.$('#video');
     if (!video) return [];
@@ -86,11 +105,24 @@ export async function extractVideoFrames(
 
         if (time > 0) {
           video.pause();
-          const target = Math.max(0, Math.min(time, Number.isFinite(video.duration) ? video.duration : time));
-          if (Math.abs(video.currentTime - target) < 0.05 && video.readyState >= 2) return;
+          const target = Math.max(
+            0,
+            Math.min(
+              time,
+              Number.isFinite(video.duration) ? video.duration : time,
+            ),
+          );
+          if (
+            Math.abs(video.currentTime - target) < 0.05 &&
+            video.readyState >= 2
+          )
+            return;
 
           await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Timed out seeking video')), 10_000);
+            const timeout = setTimeout(
+              () => reject(new Error('Timed out seeking video')),
+              10_000,
+            );
             const done = () => {
               clearTimeout(timeout);
               resolve();
@@ -101,7 +133,10 @@ export async function extractVideoFrames(
         }
 
         await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('Timed out rendering video frame')), 2_000);
+          const timeout = setTimeout(
+            () => reject(new Error('Timed out rendering video frame')),
+            2_000,
+          );
           const done = () => {
             clearTimeout(timeout);
             resolve();

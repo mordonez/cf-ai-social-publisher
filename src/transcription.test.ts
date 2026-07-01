@@ -32,7 +32,11 @@ describe('transcribeVideoAudio', () => {
     } as unknown as Ai;
 
     const buffer = new Uint8Array([0x00, 0x01, 0x02]).buffer;
-    const transcript = await transcribeVideoAudio(buffer, mockAi, '@cf/openai/gpt-4o-transcribe');
+    const transcript = await transcribeVideoAudio(
+      buffer,
+      mockAi,
+      '@cf/openai/gpt-4o-transcribe',
+    );
     expect(transcript).toBe('custom model transcript');
   });
 });

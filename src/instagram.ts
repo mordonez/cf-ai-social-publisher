@@ -1,13 +1,23 @@
 const BASE = 'https://graph.facebook.com/v21.0';
 
-type StatusCode = 'FINISHED' | 'IN_PROGRESS' | 'PUBLISHED' | 'ERROR' | 'EXPIRED';
+type StatusCode =
+  'FINISHED' | 'IN_PROGRESS' | 'PUBLISHED' | 'ERROR' | 'EXPIRED';
 
-async function graphRequest<T>(url: URL, method: 'GET' | 'POST' = 'GET', accessToken?: string): Promise<T> {
-  const headers: HeadersInit = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+async function graphRequest<T>(
+  url: URL,
+  method: 'GET' | 'POST' = 'GET',
+  accessToken?: string,
+): Promise<T> {
+  const headers: HeadersInit = accessToken
+    ? { Authorization: `Bearer ${accessToken}` }
+    : {};
   const res = await fetch(url.toString(), { method, headers });
   const data = (await res.json()) as T & { error?: { message: string } };
   if (!res.ok || (data as { error?: { message: string } }).error) {
-    throw new Error((data as { error?: { message: string } }).error?.message ?? `HTTP ${res.status}`);
+    throw new Error(
+      (data as { error?: { message: string } }).error?.message ??
+        `HTTP ${res.status}`,
+    );
   }
   return data;
 }
@@ -36,7 +46,11 @@ async function waitForContainer(
     const url = new URL(`${BASE}/${containerId}`);
     url.searchParams.set('fields', 'status_code');
 
-    const data = await graphRequest<{ id: string; status_code: StatusCode }>(url, 'GET', accessToken);
+    const data = await graphRequest<{ id: string; status_code: StatusCode }>(
+      url,
+      'GET',
+      accessToken,
+    );
 
     if (data.status_code === 'FINISHED') return;
     if (data.status_code === 'ERROR' || data.status_code === 'EXPIRED') {
@@ -66,7 +80,12 @@ export async function publishToInstagram(
   imageUrl: string,
   caption: string,
 ): Promise<string> {
-  const containerId = await createMediaContainer(accountId, accessToken, imageUrl, caption);
+  const containerId = await createMediaContainer(
+    accountId,
+    accessToken,
+    imageUrl,
+    caption,
+  );
   await waitForContainer(containerId, accessToken);
   return publishMedia(accountId, accessToken, containerId);
 }
@@ -93,7 +112,11 @@ export async function checkContainerStatus(
   const url = new URL(`${BASE}/${containerId}`);
   url.searchParams.set('fields', 'status_code');
 
-  const data = await graphRequest<{ id: string; status_code: StatusCode }>(url, 'GET', accessToken);
+  const data = await graphRequest<{ id: string; status_code: StatusCode }>(
+    url,
+    'GET',
+    accessToken,
+  );
   return data.status_code;
 }
 

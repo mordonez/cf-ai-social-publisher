@@ -5,7 +5,6 @@ declare module '*.wasm' {
   export default module;
 }
 
-
 interface ImageData {
   readonly data: Uint8ClampedArray;
   readonly height: number;

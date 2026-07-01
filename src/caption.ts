@@ -23,18 +23,31 @@ function prepareForAI(buffer: ArrayBuffer, mimeType: string): string {
   return `data:${mimeType};base64,${base64}`;
 }
 
-async function generateCaptionFromDescription(description: string, ai: Ai, persona: PersonaConfig): Promise<string> {
-  const captionRes = await (ai as any).run(persona.captionModel ?? DEFAULT_CAPTION_MODEL, {
-    messages: [
-      { role: 'system', content: persona.captionSystemPrompt },
-      { role: 'user', content: `Description: "${description}"` },
-    ],
-    max_tokens: 350,
-  });
+async function generateCaptionFromDescription(
+  description: string,
+  ai: Ai,
+  persona: PersonaConfig,
+): Promise<string> {
+  const captionRes = await (ai as any).run(
+    persona.captionModel ?? DEFAULT_CAPTION_MODEL,
+    {
+      messages: [
+        { role: 'system', content: persona.captionSystemPrompt },
+        { role: 'user', content: `Description: "${description}"` },
+      ],
+      max_tokens: 350,
+    },
+  );
   return ((captionRes as any).response ?? '').trim();
 }
 
-async function describeImage(buffer: ArrayBuffer, mimeType: string, ai: Ai, prompt: string, model: string): Promise<string> {
+async function describeImage(
+  buffer: ArrayBuffer,
+  mimeType: string,
+  ai: Ai,
+  prompt: string,
+  model: string,
+): Promise<string> {
   const dataUrl = prepareForAI(buffer, mimeType);
 
   const describeRes = await (ai as any).run(model, {
@@ -59,7 +72,13 @@ export async function generateCaption(
   persona: PersonaConfig,
 ): Promise<string> {
   // Step 1: vision model describes the scene
-  const description = await describeImage(buffer, mimeType, ai, persona.describeImagePrompt, persona.visionModel ?? DEFAULT_VISION_MODEL);
+  const description = await describeImage(
+    buffer,
+    mimeType,
+    ai,
+    persona.describeImagePrompt,
+    persona.visionModel ?? DEFAULT_VISION_MODEL,
+  );
   console.log('img_description', description);
 
   return generateCaptionFromDescription(description, ai, persona);
@@ -72,17 +91,26 @@ export async function generateCaptionFromImages(
   audioTranscript?: string,
 ): Promise<string> {
   if (images.length === 0) return '';
-  if (images.length === 1 && !audioTranscript) return generateCaption(images[0].buffer, images[0].mimeType, ai, persona);
+  if (images.length === 1 && !audioTranscript)
+    return generateCaption(images[0].buffer, images[0].mimeType, ai, persona);
 
   const visionModel = persona.visionModel ?? DEFAULT_VISION_MODEL;
   const descriptions: string[] = [];
   for (const [index, image] of images.entries()) {
-    const frameDescription = await describeImage(image.buffer, image.mimeType, ai, persona.describeVideoFramePrompt, visionModel);
+    const frameDescription = await describeImage(
+      image.buffer,
+      image.mimeType,
+      ai,
+      persona.describeVideoFramePrompt,
+      visionModel,
+    );
     console.log('video_frame_description', index + 1, frameDescription);
-    if (frameDescription) descriptions.push(`Frame ${index + 1}: ${frameDescription}`);
+    if (frameDescription)
+      descriptions.push(`Frame ${index + 1}: ${frameDescription}`);
   }
 
-  if (audioTranscript) descriptions.push(`Audio transcript: "${audioTranscript}"`);
+  if (audioTranscript)
+    descriptions.push(`Audio transcript: "${audioTranscript}"`);
 
   const description = descriptions.join('\n');
   console.log('video_description', description);
