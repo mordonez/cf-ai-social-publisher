@@ -33,12 +33,11 @@ export type InstagramWorkerEnv = {
   API_KEY: string;
   IMAGES: R2Bucket;
   AI: Ai;
-  /** Resize/watermark/color transforms run here, off the Worker's own CPU budget. */
+  /** Resize/watermark transforms run here, off the Worker's own CPU budget. */
   IMAGE_TRANSFORM: ImagesBinding;
   /** Every post type (image/carousel/video) is queued here. */
   POST_QUEUE: Queue<PostJob>;
   BROWSER?: Fetcher;
-  HDR_ENABLED?: string;
 };
 
 export type InstagramWorkerConfig = {
@@ -56,9 +55,7 @@ export type InstagramWorkerConfig = {
 const DEFAULT_POST_PROCESSING_MESSAGE =
   'Your post is being processed. It will be published automatically in a few minutes.';
 
-// Instagram Graph API's Content Publishing API caps carousel posts at 10
-// children (the Instagram app itself allows up to 20 slides, but that limit
-// doesn't apply to the API this worker calls).
+// Instagram Graph API's carousel cap, not the app's 20-slide UI limit — see docs/adr/0001-instagram-carousel-support.md
 const MAX_IMAGES_PER_POST = 10;
 
 /** Single image (`generateCaption`) or, for a carousel, one AI call per photo joined into a caption (`generateCaptionFromImages`). */
@@ -317,7 +314,6 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
     let processedBuffer: ArrayBuffer;
     try {
       processedBuffer = await processImage(c.env.IMAGE_TRANSFORM, imageBuffer, {
-        hdr: c.env.HDR_ENABLED === '1',
         watermarkB64,
       });
     } catch (e) {
@@ -342,9 +338,7 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
       return c.json({ error: 'Expected multipart/form-data' }, 400);
     }
 
-    // Accept both `image` (repeated field name) and `image[]` — some HTTP
-    // clients (e.g. HTTP Shortcuts' "Multiple Files" parameter type) always
-    // suffix the field name with `[]`, even for a single file.
+    // Accept `image` and `image[]` — see docs/adr/0001-instagram-carousel-support.md
     const files = [
       ...formData.getAll('image'),
       ...formData.getAll('image[]'),
@@ -480,6 +474,7 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
     );
   });
 
+  // See docs/adr/0002-unified-async-post-queue.md for the ack/retry/cleanup design.
   async function processImageJob(
     msg: Message<PostJob>,
     env: InstagramWorkerEnv,
@@ -497,7 +492,6 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
       job.caption ||
       (await resolveImageCaption(buffers, job.mime_types, env.AI, persona));
 
-    const hdr = env.HDR_ENABLED === '1';
     const processedKeys: string[] = [];
     const imageUrls: string[] = [];
 
@@ -513,7 +507,6 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
             env.IMAGE_TRANSFORM,
             buffers[i],
             {
-              hdr,
               watermarkB64,
             },
           );
@@ -543,8 +536,7 @@ export function createInstagramWorker(config: InstagramWorkerConfig) {
       );
       console.log('published', postId);
     } catch (e) {
-      // Only the disposable processed copies are cleaned up here — the raw
-      // originals in job.r2_keys must survive so a retry can reprocess them.
+      // Raw originals survive for the retry — only processed copies are disposable.
       for (const key of processedKeys) {
         await env.IMAGES.delete(key).catch(() => {});
       }

@@ -97,16 +97,6 @@ describe('processImage', () => {
     ]);
   });
 
-  it('adds a contrast/saturation transform only when hdr is requested', async () => {
-    const images = createFakeImagesBinding();
-    await processImage(images, buffer, { hdr: true });
-
-    expect(images.calls).toContainEqual([
-      'transform',
-      { contrast: 1.15, saturation: 1.3 },
-    ]);
-  });
-
   it('draws a watermark sized and positioned off the max width when provided', async () => {
     const images = createFakeImagesBinding();
     const watermarkB64 = Buffer.from(new Uint8Array([9, 9, 9])).toString(

@@ -72,33 +72,18 @@ const WATERMARK_WIDTH_RATIO = 0.28;
 const WATERMARK_MARGIN_RATIO = 0.025;
 
 /**
- * Resize, optionally apply an HDR-ish contrast/saturation boost, and
- * optionally composite a watermark — all via Cloudflare's Images binding, so
- * none of this counts against the Worker's own CPU time budget (unlike a
- * decode via an in-Worker WASM codec, which routinely exceeds the Free
- * plan's 10ms CPU limit for a real phone photo).
- *
- * Watermark/HDR sizing is computed off the fixed MAX_WIDTH target rather
- * than the actual post-resize dimensions (which would need an extra,
- * separately billed `.info()` call) — this only under-sizes the watermark
- * for sources already narrower than MAX_WIDTH, which real phone photos
- * never are.
+ * Resize and optionally composite a watermark via Cloudflare's Images
+ * binding — see docs/adr/0003-image-processing-via-cloudflare-images-binding.md
+ * for why this replaced an in-Worker codec.
  */
 export async function processImage(
   images: ImagesBinding,
   buffer: ArrayBuffer,
-  options?: { hdr?: boolean; watermarkB64?: string },
+  options?: { watermarkB64?: string },
 ): Promise<ArrayBuffer> {
   let transformer = images
     .input(toStream(buffer))
     .transform({ width: MAX_WIDTH, fit: 'scale-down' });
-
-  if (options?.hdr) {
-    // Approximates the old S-curve + ×1.3 saturation filter using
-    // Cloudflare's built-in adjustments; the old per-channel warm-shadow
-    // tint isn't replicable with these global knobs and is dropped.
-    transformer = transformer.transform({ contrast: 1.15, saturation: 1.3 });
-  }
 
   if (options?.watermarkB64) {
     // Buffer.from() can return a view into a larger pooled ArrayBuffer, so

@@ -9,7 +9,7 @@ A Cloudflare Workers toolkit for publishing to social media with AI-generated ca
 
 - **Publishing**: Instagram Graph API — photos, carousels (up to 10 images), videos/Reels, token refresh.
 - **Captions**: vision model describes the scene, an LLM writes it in your persona's voice.
-- **Image processing**: resize, optional HDR-ish contrast/saturation boost, watermark — via Cloudflare's Images binding, so it runs off the Worker's own CPU budget (safe on the Free plan regardless of photo size).
+- **Image processing**: resize, watermark — via Cloudflare's Images binding, so it runs off the Worker's own CPU budget (safe on the Free plan regardless of photo size).
 - **Video**: frame extraction (Browser Rendering) + audio transcription (Whisper), both fed into the caption prompt.
 - **`createInstagramWorker(config)`**: a full Worker — health check, auth, `/caption`, `/preview`, `/post`, post-processing queue — in ~10 lines.
 
@@ -175,7 +175,7 @@ curl -s -X POST http://localhost:8787/post \
 
 `wrangler dev` simulates Queues locally too, so the whole real-post pipeline (captioning, image processing, Instagram container creation/polling, publishing) runs the same locally as in production — watch `wrangler dev`'s console for the consumer's logs. The one thing that still needs production-like setup is Instagram actually being able to fetch the media: it requires a **publicly reachable** R2 URL (`wrangler r2 bucket dev-url enable <bucket>`) and real Instagram credentials. `dry_run=1` remains the fully-offline option — it never uploads processed media or touches the queue.
 
-Plain `wrangler dev` only emulates a subset of the Images binding (`width`/`height`/`rotate`/`format` — no watermark, no HDR). To see the real watermark/contrast output locally, run `wrangler dev --remote` instead, which calls Cloudflare's actual Images service (still free, within the 5,000 transformations/month tier).
+Plain `wrangler dev` only emulates a subset of the Images binding (`width`/`height`/`rotate`/`format` — no watermark draw). To see the real watermarked output locally, set `"remote": true` on the `images` binding in `wrangler.jsonc` (or run `wrangler dev --remote` for the whole worker), which calls Cloudflare's actual Images service (still free, within the 5,000 transformations/month tier).
 
 ## Escape hatch: building blocks
 
@@ -195,6 +195,7 @@ Plain `wrangler dev` only emulates a subset of the Images binding (`width`/`heig
 
 ## Where to look
 
+- **Design decisions**: [docs/adr](./docs/adr) — why carousels cap at 10, why everything goes through one queue, why image processing runs via the Images binding instead of an in-Worker codec.
 - **Logs**: `wrangler tail`, or dashboard → Workers & Pages → your worker → Logs → Live.
 - **Models & pricing**: [Workers AI catalog](https://developers.cloudflare.com/workers-ai/models/).
 - **Free tier**: [Workers](https://developers.cloudflare.com/workers/platform/limits/) 100k req/day · [R2](https://developers.cloudflare.com/r2/platform/limits/) 10 GB + 1M writes/month · [Workers AI](https://developers.cloudflare.com/workers-ai/platform/pricing/) 10k neurons/day · [Queues](https://developers.cloudflare.com/changelog/post/2026-02-04-queues-free-plan/) 10k ops/day · [Browser Rendering](https://developers.cloudflare.com/browser-rendering/) 10 min/day. One post easily fits within all of these.
