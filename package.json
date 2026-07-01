@@ -1,0 +1,43 @@
+{
+  "name": "cf-ai-social-publisher",
+  "version": "0.1.0",
+  "description": "Cloudflare Workers toolkit for AI-generated social captions (Workers AI vision + LLM), image/video processing, and publishing — batteries-included Instagram support today, more providers welcome.",
+  "keywords": [
+    "cloudflare-workers",
+    "workers-ai",
+    "instagram",
+    "social-media",
+    "image-processing",
+    "hono"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mordonez/cf-ai-social-publisher"
+  },
+  "bugs": {
+    "url": "https://github.com/mordonez/cf-ai-social-publisher/issues"
+  },
+  "homepage": "https://github.com/mordonez/cf-ai-social-publisher#readme",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "^1.6.0",
+    "@jsquash/png": "^3.1.1",
+    "hono": "^4.7.0"
+  },
+  "devDependencies": {
+    "@cloudflare/puppeteer": "^1.1.0",
+    "@cloudflare/workers-types": "^4.20241218.0",
+    "@types/node": "^26.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  }
+}
